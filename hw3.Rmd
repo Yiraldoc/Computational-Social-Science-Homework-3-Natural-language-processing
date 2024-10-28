@@ -1,0 +1,417 @@
+---
+title: "Computational Social Science Homework 3: Natural language processing"
+author: "Your name here"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# Do not edit this chunk
+
+# The following lines define how the output of code chunks should behave
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(include = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(error = TRUE)
+
+# Required packages
+# You should have these from previous homeworks and lecture slides, but 
+# please install any that are missing
+library(rmarkdown)
+library(tidyverse)
+library(knitr)
+library(stringr)
+library(tidytext)
+library(word2vec)
+library(stm)
+library(ggplot2)
+library(viridis)
+library(parallel)
+library(reshape2)
+library(magrittr)
+
+set.seed(10980) # Setting random seed
+```
+
+# Instructions
+
+This assignment is designed to build your familiarity with the natural language processing techniques covered in class. As in the previous assignments, it will involve a combination of short written answers and coding in R. All answers should be written in this document. *Please write answers to written questions outside of the code cells rather than as comments.*
+
+### Requirements
+You should be viewing this document in RStudio. If you have not done so already, make sure to install the required packages (see initial chunk). You can do this by clicking the ``Install`` button in the Packages tab in the lower-right corner of RStudio and following the directions on the installation menu. You can also install packages by entering ``install.packages(x)`` into the R Console, where ``x`` is the name of the package. Do not leave any `install.packages()` commands in the final document.
+
+# **Part I: From text to vector representations**
+
+The data consist of a set of tweets from 12 prominent politicians in the United States, 6 Democrats and 6 Republicans. The data cover the period from 2020 to late 2021 (*RIP the Twitter Academic API*). The entire timeline for each politician was collected (Twitter provides the ~3200 most recent tweets) but the dataset has been filtered to contain tweets from 2020 onwards. Note that politicians who tweet very frequently might not have any tweets for 2020 (i.e. if they wrote more than 3200 tweets in 2021, as 3200 was the maximum Twitter provided).
+
+*Please make sure to run the chunk above to load the necessary packages for this assignment. You may need to install some of the packages if you have not done so already* 
+
+Run this chunk to load and preparte the data. The regular expressions should remove hashtags, mentions, and URLs, as well as exact duplicates.
+```{r loading data, echo=FALSE, tidy=TRUE, eval=TRUE, include=FALSE}
+# DO NOT MODIFY THIS CHUNK
+data <- read_csv('data/politics_twitter.csv')
+
+data <- data %>% 
+    mutate(text = gsub("#[A-Za-z0-9]+|@[A-Za-z0-9]", "", text)) %>% # Removing hashtags and mentions
+    mutate(text = gsub("(http[^ ]*)|(www.[^ ]*)", "", text)) %>% # Removing URLs
+    mutate(text = gsub("’", "'", text)) %>% # Replacing special character
+    distinct(text, .keep_all = TRUE) # Removing duplicates
+print(unique(data$screen_name)) # This shows the screen names
+```
+
+### Downsampling data (Optional)
+I encourage you to attempt this assignment using the full version of the dataset. If you find that your computer is struggling due to the size of the data (RStudio is crashing, overheating, running out of memory, etc.), then uncomment and run the cell below to take a random sample of the data to use for analyses below. You may change `n` to be smaller or larger as necessary.
+
+```{r sampling, echo=FALSE, tidy=TRUE, eval=TRUE, include=FALSE}
+#n <- 5000
+#data <- sample_n(data, n)
+```
+
+### Questions
+Q.1 Before analyzing the language, let's take a look at the dataset to see what it contains. Please write code to do the following.
+
+a. Calculate the number of tweets each politician wrote.
+
+b. Calculate the median number of tweets for each month and year in the dataset. The results should show a single value for each month-year pair.
+```{r q1, echo=FALSE, tidy=TRUE}
+# a
+#In order to showcase the number of tweets each politician wrote in total, my first step was to create a new data frame which contains  just the politicians usuing the group() command and then using summarise() I added together  all the tweets that correspondent to their politician  with n() as it combines all the rows
+
+politician.total.tweet <- data %>%
+  group_by(screen_name) %>%
+  summarise(total_tweets = sum( n()))
+
+print(politician.total.tweet)
+
+# b.
+# Create a new data frame with select() that contains the day, month and year and using group_by() I made it so R would look at each month and year pair as an individual group. Similar to how I used mean() for the last homework, I used the summarise() function to create a column that used the median() code on the day column. This found the medium day for each month and year pair
+
+date_tweet <- data %>%
+  select(month, year, day) %>%
+  group_by(month, year) 
+
+date_tweet_median <- date_tweet %>%
+  summarise(day_tweet_median = median(day))
+print(date_tweet_median)
+
+```
+
+Q.2: Complete the arguments for `unnest_tokens` to count all of the words in the corpus. Answer the question below.
+```{r q2, echo=TRUE, tidy=TRUE}
+#Within the unnest_tokens(), it creates a new column called "word", and I am taking the text from "text" column. Unnest_tokens() takes text and creates variables
+words <- data %>% unnest_tokens(word, text) # Modify unnest_tokens
+
+# Do not modify code below
+words %>% count(word, sort = TRUE) %>%
+  slice(1:10) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) + geom_col() +
+  labs(y = NULL, x='Term frequency', title=paste("10 most frequent terms in corpus"))
+```
+What are the top three most frequent words? Explain this result in the context of Zipf's law. Answer: 
+The top three most frequent words within this data frame of tweets are "the" "to" "and". What this show cases in terms of Zipf's law is that "the" is ranked as 1 and has a higher frequency which makes it more likely to be used compared to "to" which is ranked 2. Now "to" has a higher frequency than "and" which is ranked as 3 and has the lowest frequency amongst the higher 3 ranks of the data frame.
+
+Q.3: Let's remove the stopwords. If you run the code below, you will see that the term `amp` is the most frequent term. Add this term to the `stop_words` list. Hint: You will need to create an object with the same structure as `stop_words` then merge them together. You can add any string in the lexicon column as it is ignored in the join. Finally, complete the filter argument to retain only stopwords from the "snowball" lexicon.
+```{r q3, echo=TRUE, tidy=TRUE}
+data(stop_words) 
+stop_words <- stop_words
+
+# I need to create a new tibble data frame that contains the column called "word" and inside will be a character "c()", with the word "amp". The next column  called "lexicon" and inside will be a character "c()", with the character "snowball".
+
+to_remove <- tibble(word=c("amp"), lexicon=c("snowball")) 
+stop_words <-  bind_rows(stop_words, to_remove) # Add "amp" to stopwords
+
+    # I will filter by looking at the column "lexicon" in the "stop_words" data frame and only keep rows called "snowball"
+stop_words <- stop_words %>% filter(lexicon == "snowball") # Modify
+
+# Do not modify code below
+words.2 <- words %>% anti_join(stop_words)
+
+words.2 %>% count(word, sort = TRUE) %>%
+  slice(1:10) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) + geom_col() +
+  labs(y = NULL, x='Term frequency', title=paste("10 most frequent terms"), caption = "Stopwords removed.")
+
+```
+
+Q4. Let's analyze how the language used by each politician varies and how this varies over time. Complete the `group_by` statement to count the words used by each politician in each year. Next, assign `X` to be the screen name of one of the politicians in the dataset. Answer the question below.
+```{r q4, echo=TRUE, tidy=TRUE}
+person_year_counts <- data %>% unnest_tokens(word, text) %>%
+  anti_join(stop_words) %>%
+  count(word, screen_name, year)
+
+top_terms <- 
+  person_year_counts %>%
+  group_by(screen_name,year) %>% # Add arguments to group_by
+  top_n(10, n) %>%
+  ungroup() %>%
+  arrange(word, -n) 
+
+X <- "JoeBiden" # Choose the screen name of a politician
+top_terms  %>% filter(screen_name == X) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = factor(year))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ year, scales = "free") + scale_fill_viridis_d() +
+  coord_flip() + labs(y="Word frequency", x="Term", title = paste("Top 5 words used by ", X,   " in 2020-2021"))
+```
+What do the results tell you about this politician? Does their language vary between 2020 and 2021? Answer:
+The reason why I picked Joe Biden was because I thought it would be interesting to see and analyze the top words Joe Biden would use in 2020 compared to 2021 due to there being the presidential election and COVID-19. Before looking at the graph, I expected that in 2020, Joe Biden would mainly use words such as the name "Donal," "Trump," and "voting" due to his running for president, and everything he would tweet would surround such occasions. Now, for 2021, since he won the election, those words would not be used as much, if not at all, and would be replaced with more words that target the American people and COVID-19. For starters, my perceptions of the 2020 words were correct, as "president" was first with roughly a 650 frequency it was used in a tweet, and "Trump" was used about 500. Now, the variety in words in 2021 is not that surprising as he now needs to focus on the whole country and its issues, but with that being said, I am really surprised that COVID-19-related words are only "vaccinated" with roughly a frequency of 550. If I am being honest, that is a little disappointing since it was such a major crisis for the country, and I would have expected it to be higher with a higher frequency of the word being used.
+
+Q5. Modify the code to look at another politician. Answer the questions below.
+```{r q5, echo=TRUE, tidy=TRUE}
+Y <- "KamalaHarris" # Choose another figure here
+top_terms %>% filter(screen_name == Y) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = factor(year))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ year, scales = "free") + scale_fill_viridis_d() +
+  coord_flip() + labs(y="Word frequency", x="Term", title = paste("Top 5 words used by", Y, "in each year"))
+```
+Do you notice any differences between the two politicians?  Answer:
+Now, I picked Kamala Harris for the same reason I picked Joe Biden; I wanted to see how the presidential election and COVID-19 would impact their choice of words. Both politicians do the same in 2021 in which their tweets and word choice mainly surround the 2020 election, which makes sense as they are trying to win. Now, for 2020, I am really surprised Kamala Harris did not have any words pertaining to COVID-19 in her top 10 words. Of course, the tweets may be revolving around Covid-19, but she does not mention such words enough for them to have a high frequency. At least Joe Biden has "vaccination" in his top 10.
+
+Q6. Let's create a TF-IDF weighted document-term matrix, where each document is a politician-year pair. This will help to compare how politicians use language. Review the documentation for the `unite` function. Next, add arguments to the `unite` function to create a new column called `person_year` where the value is the string for the person's handle and the year, e.g "AOC_2021". Make sure to include an argument to `unite` to avoid dropping the original columns.
+```{r q6, echo=TRUE, tidy=TRUE}
+# Let's add a column with the total frequency of each word
+word.totals <- person_year_counts %>% 
+  group_by(word) %>% 
+  summarize(total = sum(n))
+
+person_year <- left_join(person_year_counts, word.totals) %>%
+  unite("person_year", screen_name, year, remove = FALSE) # add arguments here ## Unite is created a new column called "person_year", but the remove= FALSE indicates that I do not want to remove the original "screen_name" and "name" column
+
+tfidf <- person_year %>%  filter(total >= 10) %>% 
+  bind_tf_idf(word, person_year, n)
+```
+
+Q7. By weighting terms by their TF-IDF scores, where a document is treated as all the lines by a politician in a given year, we can better distinguish the language unique to particular politicians. Run this chunk and answer the questions below.
+```{r q7, echo=TRUE, tidy=TRUE}
+# Do not modify this chunk
+top_tfidf <- 
+  tfidf %>%
+  group_by(screen_name, year) %>% 
+  top_n(5, tf_idf) %>%
+  ungroup() %>%
+  arrange(word, -tf_idf)
+
+top_tfidf %>% filter(screen_name == X) %>%
+  mutate(word = reorder(word, tf_idf)) %>%
+  ggplot(aes(word, tf_idf, fill = factor(year))) +
+  geom_col(show.legend = FALSE) + 
+  facet_wrap(~ year, scales = "free") + scale_fill_viridis_d() +
+  coord_flip() + labs(y="TF-IDF score", x="Term", title = paste("Top 5 words used by", X, "in each year "))
+
+top_tfidf %>% filter(screen_name == Y) %>%
+  mutate(word = reorder(word, tf_idf)) %>%
+  ggplot(aes(word, tf_idf, fill = factor(year))) +
+  geom_col(show.legend = FALSE) + 
+  facet_wrap(~ year, scales = "free") + scale_fill_viridis_d() +
+  coord_flip() + labs(y="TF-IDF score", x="Term", title = paste("Top 5 words used by", Y, "in each year"))
+```
+How do the results vary now that we have used TF-IDF weighting? What do the results tell you about these two politicians? Answer:  The results are both different and the same in terms of what I was expecting and what it came out to be. For Joe Biden, the words most commonly used in 2020 still pertain to the election, which is what is expected. Now, for 2021, the results I wanted to see are actually what came out. In 2021, Joe Biden did, in fact, frequently use words in his tweets that pertained to Covid-19, which is not surprising because of the major global crisis. Now Kamala Harris is still a little disappointing. For 2020, the words that were most common were still those that surround the 2020 election, similar to Joe Biden. Unfortunately, for 2021, now that we have a closer look, she still has very few words in her top 5 that may be associated with COVID-19. She only has 1 word which are "vaccinated," compared to Joe Biden, who had 3. Now we may speculate that "rescue" may be pertaining to rescuing people, but still a little disappointing. Especially since she is associated with being more in touch with the youth, and she would use social media more. So, we could have assumed that a major issue such as COVID-19 would be tweeted about more.
+
+
+We can use this data to construct a TF-IDF weighted document-term matrix (DTM).
+```{r dtm, echo=TRUE, tidy=TRUE}
+### Do not modify this chunk
+M <- tfidf %>%
+  cast_dtm(person_year, word, tf_idf) %>% as.matrix()
+
+for (i in 1:dim(M)[1]) { # Normalizing every column
+  M[i,] <- M[i,]/sqrt(sum(M[i,]^2))
+}
+
+sims <- M %*% t(M)
+
+print(sims)
+
+```
+
+Q8. Using the similarity matrix, find the 10 most similar politician-year pairs. Make sure to exclude any self-similarities (e.g. Bernie Sanders is the most similar politician to Bernie Sanders in 2020). Print each pair and the similarity score. Make sure to ignore any entries on the diagonal. Hint: You may want to use a nested loop to iterate through the data.
+```{r q8, echo=TRUE, tidy=TRUE}
+### Your code below
+
+# After the previous text gives a matrix that shows the cosine similarity between each politician and year. The first part to answer this question would be to create a new data frame in which the pairs can be stored along with it the similarity score. The character and numeric is needed in order to create the data frame and say what is being stored in it.
+  
+similar_pairs <- data.frame(person_year_pair = character(),
+                             similarity_score = numeric(),
+                             stringsAsFactors = FALSE)
+ #In order to construct the loop that will run through the whole matrix, I will first label n with all the rows
+ 
+n <- nrow(sims)
+
+#Reading the loop: I am sorry Professor if it looks messy. I had to go through many of the R documents, lectures and even work from previous courses I took to figure out how to do this loop. I have never been good with loops. so I wanted to be able to understand this one so I can replicate it if I need to in my future. 
+  
+ for (i in 1:(n - 1)) { # This is part acts as a set up for the next part but it read like "I will start looking at 1 in a sequence through n - 1 or the total number of rows I have minus 1. This would be the total number of rows minus 1 (n-1) or (23-1) so 22 rows. The reason is so it examines every row, but leaves the last one in order to restart the cycle on the next one.
+  for (j in (i + 1):n) { # this prevents repeating the same person_year or self-similarities as it takes the person_year I am looking at (i) and adds one going up to n or the total number of rows and that new person_year would be j
+    if (i != j){ # This reads that i person_year is not the same j person_year and so it skips self-similarities
+    score <- sims[i, j] # this would give me the score of each pair of person_year
+      pairs <- paste(rownames(sims)[i], "and", rownames(sims)[j])  #this section simply creates a new variable that paste together the the rownames for the pairs i am looking at, adds "and" so i know the two i comparing and makes that each a separate row.
+        similar_pairs <- rbind(similar_pairs,data.frame(person_year_pair = pairs, similarity_score = score)) #the final section of the loops combines the rows and puts them into the data frame i have already created and labeled which is called similar_pairs. The second part of it creates a new data frame that simply combines the pairs and scores. This section overall combines together the information the loop gather and pastes them into the the data frame.
+    }
+  }
+ }
+
+print(similar_pairs)
+
+top_10_pair <- similar_pairs %>%
+   arrange(desc(similarity_score)) %>%
+  head(10)
+  
+
+print(top_10_pair)
+
+```
+What do you observe when you look at the results? Do these similarities make any sense given the differences between these figures' political views? Answer: 
+
+I thought I did it right, but it is still showing that the most similar are 2020 and 2021 from the same politician. If this is correct, then what I am seeing is that within these two years, there was no change in the way they spoke. It was interesting to see how Joe Biden and Kamala Harris both have a high similarity, and it is most definitely due to them running together and getting into the office together, so it is not a surprise they share a high similarity even though they are different people. In addition, the way they gained more similarity after the election also becomes interesting, and I would love to understand the possibility for the reason why.
+
+# *Part 2: Word embeddings*
+
+Let's continue our analysis using word embeddings.
+
+Q9. Use the `word2vec` function to train an embedding model using the *entire corpus*. Complete the function to use the skip-gram model with 100 dimensional vectors, a window size of 3, and 5 negative samples. Set the minimum word count to equal 10.
+```{r q9a, echo=TRUE, tidy=TRUE}
+model <- word2vec::word2vec(x = tolower(data$text), 
+                  type= "skip-gram", # complete argument
+                  dim=100, # complete argument
+                  window =3L , # complete argument
+                  negative=5L , # complete argument
+                  iter=10L)
+```
+
+Let's analyze how politicians are represented in this model. Choose a keyword and run the chunk (you will need to ensure the term you use is in the vocabulary, you will get an error if a word is not recognized). Answer the question below.
+```{r q9b, echo=TRUE, tidy=TRUE}
+keyword <- "covid" # Select an appropriate term here
+predict(model, keyword, type = "nearest", top_n = 10)
+```
+Describe what the results show. Do these results make any sense? Answer:
+
+Using the same theme as the previous question, I wanted to analyze the word "covid" and its similarity to other words. The results do make sense as the similarity rates for the top 10 are high, and it makes sense because all the words relate to COVID-19.
+
+# *Part 3: Topic models*
+
+For the final part of this assignment you will train a topic model on the corpus and analyze the results. We will use a structural topic model with prevalence and content covariates.
+
+The code below creates a new variable called `party`, indicating whether a politician is a Democrat or a Republican. To help make the computation easier we will restrict our focus to the subset of tweets that were written in 2021.
+
+```{r q10prep, echo=TRUE, tidy=TRUE}
+# Run this chunk without modifying the code
+data$party <- factor(ifelse(data$screen_name %in% c("JoeBiden","KamalaHarris","SpeakerPelosi","BernieSanders","AOC","SenSchumer"), "Democrat", "Republican"))
+data <- data %>% filter(year == 2021) # Using only 2021 data
+meta <- data %>% select(party, screen_name, month) # Extracting metadata
+```
+
+Q.10
+Modify the `textProcessor` function to use the same stopwords as  above. You will also need to modify the `removestopwords` argument, otherwise the model will remove the stopwords above *and* those in the preset lexicon. *Note: It make take a couple of minutes for this chunk to run.*
+```{r q10, echo=TRUE, tidy=TRUE}
+
+#While trying to use my original stop_words data frame, the function kept throwing out an error and so I figured out it was because the vector needed to contain words. So I created a new data frame that took only the first column( the words) and then converted it into a character data frame.
+
+stop_words_10 <-  stop_words[1]
+stop_words_10 <- as.character(stop_words_10)
+
+processed.docs <- textProcessor(data$text, metadata = meta, customstopwords = stop_words_10, removestopwords = TRUE) # Add the two stopwords arguments
+
+output <- prepDocuments(processed.docs$documents, processed.docs$vocab, processed.docs$meta, lower.thresh = 10)
+```
+
+Q.11. Complete the `stm` function to run an initial topic modeling. Pick a value for `K` and add arguments to allow prevalence to vary as a function of month and party and content to vary as a function of party.
+
+*This code may take up to 5 minutes to run. I recommend testing it using a sub-sample of the data before running it for the entire dataset.*
+```{r q11, echo=TRUE, tidy=TRUE}
+K <- 45 # Choose k (Somewhere between 10 and 100 is recommended)
+
+fit <- stm(documents = output$documents, vocab = output$vocab, 
+           K=K,
+           data = output$meta, 
+           prevalence =~ party + s(month) , # Add prevalence formula
+           content =~ party , # Add content formula
+           verbose = TRUE
+           )
+
+```
+
+Q.12. We can plot the topic proportions to get the topics that occur most frequently. Run the code below and inspect the results.
+
+```{r q12p, echo=TRUE, tidy = TRUE}
+plot(fit, type = "summary")
+```
+
+We can extract these values by manipulating results of the `make.dt` function, which provides us with a vector of topic proportions for each document. This code uses `doc.props` and `doc.count` create a object creating the average proportion of each topic over all documents (the result should have the dimension `K x 1`). The results the 5 topics with the highest proportions in the corpus. 
+
+Review the code carefully then add arguments to `summarize_if` to take the sum of all numeric columns in `doc.props`. Hint: Run the first lines and inspect `doc.pops` and `doc.count` first to see how they are structured.
+```{r q12, echo=TRUE, tidy=TRUE}
+doc.props <- make.dt(fit) # gets document proportions
+doc.count <- dim(doc.props)[1] # gets number of documents
+
+top5 <- doc.props %>% summarize_if(is.numeric, sum) %>% # complete arguments
+  select_if(str_detect(names(.), "Topic")) %>%
+  divide_by(doc.count) %>% t() %>% as.data.frame() %>%
+  top_n(5)
+print(top5)
+```
+
+Q.13. Explore these five topics using any of the functions covered in lecture or the `stm` documentation (e.g. `findThoughts`, `labelTopics`), then provide names and descriptions below.
+```{r q13, echo=TRUE, tidy=TRUE}
+
+label_top_topics <- labelTopics(fit, c(10, 12, 15, 24, 37)) # I am examining only the 5 certain topics within the fit data frame that were the 5 topics with the highest proportions 
+
+print(label_top_topics)
+
+
+```
+
+Name and describe each of the five topics.
+  
+  1. Topic 10- Name: United States Military Involvement In Afghanistan.  Description: What topic 10 is referring to is the United States involvement in Afghanistan and relating to the war and troops occurring within the last 10 years. From the term "fall" we can expect these documents to mention the fall of the Afghanistan government and so the impact of the United States troop within this issue. We will also find the way biden and warren played a political impact and part in this war. 
+        Words: afghanistan, troop, fall, afghan, biden, warren, ten 
+ 
+  2. Topics 12- Name: Community Gratitude & Appreciation.  Description: What topic 12 is covering is gratitude towards volunteers and recognition of their aid and the aid of staff members and operations on issues that are local and potentially nationally. We might be able to assume that these documents might in some cases refer to the COVID-19 and those who aided in the aftermath.
+        Words: thank, local, volunt, ida, recognit, staff, oper
+        
+  3. Topic 15- Name: United States & Its Immigration Crisis  Description: From what we can see, topic 15 refers to the United States in correlation to the immigration crisis occurring within the country. We will likely find within the documents issues on the Mexican border (wall) and the amount of migrants traveling through Mexico, seeking asylum into the United States. This will include information on how the Costumes and Border Protection (cbp) might be treating the migrants in terms of potential humanitarian violations.
+        Words immigr, humanitarian, crisi, wall, asylum, cbp, mexican 
+  
+  4. Topic 24- Name: Mental Health Awareness In The United States Description: Within topic 24, we can likely find documents that are focusing on the victims of mental health disorders within the United States. From the words, we can assume the documents are referring to the underserved community (cmte) of those struggling with mental health issues and how a priority needs to be made on this issue in order for more studies to be conducted in order to find solutions to said issues and to demonstrate the importance of understanding mental illnesses.
+      Words:cmte, victim, mental, studi, demonstr, priorit, underserv
+      
+  5. Topic 37- Name: United States Failing Medical System  Description: From the words shown, we can assume that topic 37 is referring to the failing medical system in the United States as coverage from federal programs for the medical needs of the American people is not enough to pay for the medical needs or at times such coverage is not given at all. The documents might showcase a push towards rescuing the American people who had confidence on the federal government, but the current medical system is a mistake as many times people are taking money from their own pockets --which are already small-- and going straight into the pockets of major pharmaceutical companies.  
+      Words:pocket, confid, fed, coverag, american, mistak, rescu 
+  
+Q. 14 (OPTIONAL EXTRA CREDIT). Use the`estimateEffect` function covered in lecture to analyze the relationship between the covariate and the topic. 
+
+Modify the first argument of `estimateEffect` to specify the same formula as used for prevalence in the `stm` function. e.g. `1:K ~ a + b`.
+
+Next, modify the `topics` argument of `plot` to select the five topics covered above and change the `custom.labels` argument to contain the names you assigned to topics in the previous question.
+```{r q17, echo=TRUE, tidy=TRUE}
+prep <- estimateEffect(1:K ~ party + s(month), fit, meta = output$meta) # add formula
+plot(prep, "month", method = "continuous", topics = c(10, 12, 15, 24, 37), model = fit, xaxt = "n", xlab = "month",  # complete topics argument
+     labeltype = "custom", custom.labels = c("United States Military Involvement In Afghanistan", "Community Gratitude & Appreciation", "United States & Its Immigration Crisis", "Mental Health Awareness In The United States", "United States Failing Medical System"))
+
+```
+What do you notice? Are these topics stable over time or do they vary over time? Are these changes meaningful in the context of current events?
+While the legend covers the the first half of the data, it looks like the topics are stable up until the last 25% of the month. At around that point, all the topics change in terms of the difference between their proportion spreading and no longer having similar proportions, but rather half of the topics having higher and half having lower proportions. Relating to current event, I do think this meaningful because as all issues do start off as an important topic to discuss, as time goes on certain topics become less and or important that other topics of discussion
+
+Q.15 (OPTIONAL EXTRA CREDIT) Select a topic of interest and plot the differences in content by partisanship. Answer the question below.
+```{r q15, echo=TRUE, tidy=TRUE}
+plot(fit, type="perspectives", topics= 15) # Add topic number
+```
+What is this topic about? Are the differences meaningful?
+
+The topic I picked was topic 15 and I labeled it as, "United States & Its Immigration Crisis". Looking at this plot, it truly brings in an interesting understanding on the different words democrats focus on using and addressing, compared to Republicans; even though it is the same topic. For instance when we look at Democrats, there is this emphasis on the specfic issues as a climate change and most important, an extreem focus on change and actions. We can assume they focus on talking and addressing the actions and changes that will aid the issue. Now for Republicans, it seems that they take a focus on border and with that, focus a lot on political leaders instead of change and actions like democrats. We maybe can assume they talk a lot about the people involved, rather than the issue. Maybe point blame at those in office.
+
+## End
+This is the end of the assignment. Follow the submission instructions below to submit your document. The procedure is the same as for the previous assignments.
+
+### Submitting the homework
+Once you have finished the assignment, please complete the following steps to submit it:
+
+  1. Click on the ``Knit`` menu at the top of the screen and select ``Knit to HTML``. This will execute all of the code and render the RMarkdown document in HTML. Verify that this document contains all of your answers and that none of the chunks produce error messages.
+  2. Add this document *and* the HTML file to Github. Use ``Homework submitted`` as your main commit message.
+  3. Push the commit to Github.
+  4. Visit the Github repository in your browser and verify that the final version of both files has been correctly uploaded.
